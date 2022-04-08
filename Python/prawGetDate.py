@@ -3,7 +3,7 @@ from datetime import datetime
 
 
 
-def get_post_from_year(subreddit, year):
+def get_post_from_year(subreddit, year, month):
     """
     Returns id of a post from the given year in the given sub
     subreddit object comes from reddit.subreddit("martialmemes")
@@ -13,7 +13,8 @@ def get_post_from_year(subreddit, year):
     for submission in subreddit.controversial(limit=1000):
         post_year = datetime.fromtimestamp(submission.created_utc).year
 
-        if datetime.fromtimestamp(submission.created_utc).year == year:
+        if datetime.fromtimestamp(submission.created_utc).year == year \
+        and datetime.fromtimestamp(submission.created_utc).month == month:
             print(submission.title)
             return submission.id
 
