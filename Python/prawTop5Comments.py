@@ -11,11 +11,12 @@ reddit = praw.Reddit(
 listSubmission=[]
 for submission in reddit.subreddit("prequelmemes").top(limit=10):
     listSubmission.append(submission)
+    print(submission.post_hint)
 
 #5 commentaires les plus upvotés
-submission = listSubmission[0]
-top_level_comments = list(submission.comments)
-for i in range(5):
-    print(i)
-    print(top_level_comments[i].body)
+# submission = listSubmission[0]
+# top_level_comments = list(submission.comments)
+# for i in range(5):
+#     print(i)
+#     print(top_level_comments[i].body)
 

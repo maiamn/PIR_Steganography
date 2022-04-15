@@ -37,7 +37,7 @@ subreddit = reddit.subreddit("prequelmemes")
 post = get_post_from_year(subreddit, 2016)
 
 if hasattr(post, "crosspost_parent"):
-    op = r.submission(id=post.crosspost_parent.split("_")[1])
+    op = reddit.submission(id=post.crosspost_parent.split("_")[1])
 
 
 # print("\n\n")
