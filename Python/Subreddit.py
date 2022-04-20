@@ -1,7 +1,9 @@
 from re import sub
 import praw
+from datetime import date
 import datetime as dt
 from psaw import PushshiftAPI
+from prawcore.exceptions import Forbidden
 
 #online analysis : active user count
 
@@ -21,10 +23,11 @@ class SubredditImage:
     number_of_text = 0
     number_of_videos = 0
     number_of_links = 0
-    number_of_gif = 0
     number_of_title = 0
     number_of_upvotes = 0
     sum_of_upvote_ratio = 0
+    number_of_known = 0
+    number_of_unknown = 0
 
     # dictionary of subreddits from which there are crossposts
     # associated with the amount of crossposts for each
@@ -39,7 +42,7 @@ class SubredditImage:
         #post_at_date = profile.get_post_from_date(year, month)
         
         #Returns 100 posts (in exactly the time period or also after if sub is small/dead
-        posts = self.get_posts_from_date(year, month, 1, 1000)
+        posts = self.get_posts_from_date(year, month, 1, 10)
 
         self.do_stats(posts)
         
@@ -47,33 +50,35 @@ class SubredditImage:
         #List : The 5 keywords corresponding to the sub found by other method
         self.keywords = self.get_keywords()
         
+        #Float : Percentage of posts that are reposts
+        self.post_repost_percent = 100*self.number_of_reposts/self.number_of_posts
         
-        #TODO: DO THE STATS
-        
-        
-        self.number_posts_day = number_posts_day #Int : average amount of posts each day
-        self.post_repost_percent = post_repost_percent  #Float : Percentage of posts that are reposts
-        self.title_repost_percent = title_repost_percent #Float : If reposted, percentage of chance that the title was the same
-        
-        self.post_image_percent = post_image_percent #Float : Percentage of posts that are images
-        self.post_text_percent = post_text_percent #Float : Percentage of posts that are text
-        self.post_title_percent = post_title_percent #Float : Percentage of posts that are a title
-        self.post_gif_percent = post_gif_percent #Float : Percentage of posts that are GIFS
-        self.post_link_percent = post_link_percent #Float : Percentage of posts that are Audio
-        self.post_crosspost_percent = post_crosspost_percent #Float : Percentage of posts that are crossposts
+        #Float : Percentage of posts that are images
+        self.post_image_percent = 100*self.number_of_images/self.number_of_posts
+
+        #Float : Percentage of posts that are text
+        self.post_text_percent = 100*self.number_of_text/self.number_of_posts
+
+        #Float : Percentage of posts that are a title
+        self.post_title_percent = 100*self.number_of_title/self.number_of_posts
+
+        #Float : Percentage of posts that are crossposts
+        self.post_crosspost_percent = 100*self.number_of_crossposts/self.number_of_posts
 	    
-        self.average_upvote_count = average_upvote_count #Int : Average amount of upvotes per post
+        #Int : Average amount of upvotes per post
+        self.average_upvote_count = 100*self.number_of_upvotes/self.number_of_posts
     
 
     def do_stats(self, posts):
-        
-        current_day = dt.fromtimestamp(posts[0].created_utc)
+        current_day = date.fromtimestamp(posts[0].created_utc)
         les_n = [] # list of number of posts in a day
         n = 0 # number of posts for this day
 
         for post in posts:
+
+            print("////////////////"+str(post))
             
-            this_day = dt.fromtimestamp(posts.created_utc)
+            this_day = date.fromtimestamp(post.created_utc)
             if this_day.month == current_day.month and \
                 this_day.day == current_day.day:
 
@@ -90,11 +95,11 @@ class SubredditImage:
             les_n.append(n)
         
         # Number of days the image is based on
-        number_of_days = (dt.fromtimestamp(posts[0].created_utc) - dt.fromtimestamp(posts[-1].created_utc)).day
+        number_of_days = (date.fromtimestamp(posts[0].created_utc) - date.fromtimestamp(posts[-1].created_utc)).days
         self.number_of_posts = len(posts)
         self.number_posts_day = sum(les_n)/number_of_days
 
-        end_datetime = dt.fromtimestamp(post.created_utc)
+        end_datetime = date.fromtimestamp(post.created_utc)
         self.end_timestamp = f"{end_datetime.month}/{end_datetime.year}"
 
     
@@ -103,7 +108,46 @@ class SubredditImage:
         Returns three keywords associated with the posts
         """
         
-        pass
+        return [] #TODO
+
+
+    def repostInTopFiveComments(self, submission):
+    
+        top_level_comments = list(submission.comments)[:5]
+        for c in top_level_comments:
+            if "repost" in c.body.lower():
+                return True
+        
+        return False
+
+
+    def checkIsRepost(self, submission):
+        
+        # If no flair
+        if submission.link_flair_text is None:
+            if submission.is_original_content:
+                self.number_of_known += 1
+                return False
+            if self.repostInTopFiveComments(submission):
+                self.number_of_known += 1
+                return True
+
+            self.number_of_unknown += 1
+
+            return False
+
+        # If flair
+        if submission.is_original_content or "OC" in submission.link_flair_text:
+            self.number_of_known += 1
+            return False
+
+        if self.repostInTopFiveComments(submission) or "repost" in submission.link_flair_text.lower():
+            self.number_of_known += 1
+            return True
+        
+        self.number_of_unknown += 1
+        # By default, post is not a repost
+        return False
 
 
     def get_posts_from_date(self, year, month, day, n):
@@ -112,14 +156,14 @@ class SubredditImage:
         n <= 1000
         """
         
-        start_epoch=int(dt.datetime(year, month, day).timestamp()) # Could be any date
+        start_epoch = int(dt.datetime(year, month, day).timestamp()) # Could be any date
 
         submissions_generator = self.profile.api.search_submissions(
             after=start_epoch,
             subreddit=self.profile.subreddit, 
             limit=n
         ) # Returns a generator object
-        
+
         return list(submissions_generator) #list of submissions
 
 
@@ -133,7 +177,7 @@ class SubredditImage:
             op = self.profile.subreddit.submission(id=post.crosspost_parent.split("_")[1])
             original_sub = op.subreddit.display_name
 
-            number_of_crossposts += 1
+            self.number_of_crossposts += 1
             if original_sub in self.crosspost_subs:
                 self.crosspost_subs[original_sub] += 1
             else:
@@ -150,6 +194,8 @@ class SubredditImage:
                 self.number_of_images += 1
             elif 'video' in post.post_hint:
                 self.number_of_videos += 1
+            elif post.is_self and post.self_text=="":
+                self.number_of_title += 1
             elif 'link' in post.post_hint:
                 self.number_of_links += 1
             else:
@@ -162,15 +208,18 @@ class SubredditImage:
                 self.number_of_images += 1
             elif post.domain == 'v.redd.it':
                 self.number_of_videos += 1
+            elif post.is_self and post.self_text=="":
+                self.number_of_title += 1
             else:
                 self.number_of_links += 1
 
-        number_of_reposts = 0
-        number_of_title = 0
+        if self.checkIsRepost(post):
+            self.number_of_reposts += 1
+
+
         self.sum_of_upvote_ratio += post.upvote_ratio
         self.number_of_upvotes += post.score
-        
-        pass
+
         
 
 
@@ -192,12 +241,9 @@ class SubredditProfile:
         
         self.subreddit = self.reddit.subreddit(name)
 
-        self.api = PushshiftAPI(subreddit)
+        self.api = PushshiftAPI(self.reddit)
         
         self.name = name #String : Name of the subreddit
-        
-        #Boolean : Has repost sleuth bot authorized, can check posts easily
-        #self.sleuthbot_authorized = sleuthbot_authorized
 
         #Boolean : if post hints are enabled
         self.post_hints_enabled = self.check_post_hints()
@@ -209,10 +255,13 @@ class SubredditProfile:
         self.description = self.subreddit.public_description
         
         #Boolean : If the sub has repost flairs
-        self.has_repost_flairs = self.check_reposts_flairs(subreddit.flair(limit=None))
-        
+        try:
+            self.has_repost_flairs = self.check_repost_flair(self.subreddit.flair(limit=None))
+        except Forbidden:
+            self.has_repost_flairs = False
+
         #Boolean : If reposts are allowed
-        self.reposts_allowed = self.check_reposts_allowed(subreddit.rules)
+        self.reposts_allowed = self.check_reposts_allowed(self.subreddit.rules)
         
         self.can_self_assign_flair = self.subreddit.can_assign_user_flair
         self.subreddit_images = []
@@ -224,15 +273,15 @@ class SubredditProfile:
         return 'post_hint' in vars(submission)
 	
 
-    def check_reposts_allowed(rules):
+    def check_reposts_allowed(self, rules):
         """
         Checks in the rules whether reposts are allowed.
         """
             
         trigger_words = [
-            "low-quality", "reposts",
+            "low-quality", "repost",
             "low quality",
-            "redundant", "oc"
+            "redundant", " oc "
         ]
         
         okay_words = [
@@ -256,7 +305,7 @@ class SubredditProfile:
         return True
 	    
 	
-    def check_repost_flair(flairs):
+    def check_repost_flair(self, flairs):
         """
         Checks if there exists a flair dedicated to flagging reposts.
         """
@@ -270,10 +319,12 @@ class SubredditProfile:
 	
     def append_image(self, year, month):
         
-        if any(x.year == year or x.month == month for x in self.subreddit_images):
+        if any(x.year == year and x.month == month for x in self.subreddit_images):
             return -1
-        new_image = SubredditImage(year, month)
+        new_image = SubredditImage(self, year, month)
         self.subreddit_images.append(new_image)
+
+        return new_image
         
 
     def get_method(self):
@@ -284,8 +335,27 @@ tests = [
     "MartialMemes", "funny", "gaming", "music"
 ]
 
+
+
+
 for subreddit in tests:
     test = SubredditProfile(subreddit)
-    print(test.name + " : " + str(test.reposts_allowed))
+    print(f"/// {test.name} ///")
+    print(f"Post hints : {test.post_hints_enabled}") #TODO: marche pas lol
+    print(f"Sub count : {test.subscriber_count}")
+    print(f"Description : {test.description}")
+    print(f"Repost flairs : {test.has_repost_flairs}")
+    print(f"Repost allowed : {test.reposts_allowed}")
+    print(f"Self-assign flair : {test.can_self_assign_flair}")
+
+    image = test.append_image(2020, 1)
+
+    print(f"Repost% : {image.post_repost_percent}")
+    print(f"Img% : {image.post_image_percent}")
+    print(f"Txt% : {image.post_text_percent}")
+    print(f"Title% : {image.post_title_percent}")
+    print(f"Crosspost% : {image.post_crosspost_percent}")
+    print(f"Upvote% : {image.average_upvote_count}")
+
 
 
