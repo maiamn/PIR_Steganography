@@ -34,15 +34,15 @@ class SubredditImage:
     crosspost_subs = {} 
 
 
-    def __init__(self, profile, year, month):
+    def __init__(self, profile, year, month, n):
 	    
 	    #06/2016 : month and year or the image
         self.begin_timestamp = f"{month}/{year}"
         self.profile = profile
         #post_at_date = profile.get_post_from_date(year, month)
         
-        #Returns 100 posts (in exactly the time period or also after if sub is small/dead
-        posts = self.get_posts_from_date(year, month, 1, 10)
+        #Returns n posts (in exactly the time period or also after if sub is small/dead)
+        posts = self.get_posts_from_date(year, month, 1, n)
 
         self.do_stats(posts)
         
@@ -75,8 +75,6 @@ class SubredditImage:
         n = 0 # number of posts for this day
 
         for post in posts:
-
-            print("////////////////"+str(post))
             
             this_day = date.fromtimestamp(post.created_utc)
             if this_day.month == current_day.month and \
@@ -95,7 +93,7 @@ class SubredditImage:
             les_n.append(n)
         
         # Number of days the image is based on
-        number_of_days = (date.fromtimestamp(posts[0].created_utc) - date.fromtimestamp(posts[-1].created_utc)).days
+        number_of_days = 1 + (date.fromtimestamp(posts[0].created_utc) - date.fromtimestamp(posts[-1].created_utc)).days
         self.number_of_posts = len(posts)
         self.number_posts_day = sum(les_n)/number_of_days
 
@@ -130,6 +128,7 @@ class SubredditImage:
                 return False
             if self.repostInTopFiveComments(submission):
                 self.number_of_known += 1
+                print(f"{submission.title}")
                 return True
 
             self.number_of_unknown += 1
@@ -143,6 +142,7 @@ class SubredditImage:
 
         if self.repostInTopFiveComments(submission) or "repost" in submission.link_flair_text.lower():
             self.number_of_known += 1
+            print(f"{submission.title}")
             return True
         
         self.number_of_unknown += 1
@@ -157,9 +157,11 @@ class SubredditImage:
         """
         
         start_epoch = int(dt.datetime(year, month, day).timestamp()) # Could be any date
+        stop_epoch = int(dt.datetime(year, month+1, day).timestamp())
 
         submissions_generator = self.profile.api.search_submissions(
             after=start_epoch,
+            before=stop_epoch,
             subreddit=self.profile.subreddit, 
             limit=n
         ) # Returns a generator object
@@ -174,7 +176,7 @@ class SubredditImage:
         """
 
         if hasattr(post, "crosspost_parent"):
-            op = self.profile.subreddit.submission(id=post.crosspost_parent.split("_")[1])
+            op = self.profile.reddit.submission(id=post.crosspost_parent.split("_")[1])
             original_sub = op.subreddit.display_name
 
             self.number_of_crossposts += 1
@@ -317,11 +319,11 @@ class SubredditProfile:
         return False
 	
 	
-    def append_image(self, year, month):
+    def append_image(self, year, month, n):
         
         if any(x.year == year and x.month == month for x in self.subreddit_images):
             return -1
-        new_image = SubredditImage(self, year, month)
+        new_image = SubredditImage(self, year, month, n)
         self.subreddit_images.append(new_image)
 
         return new_image
@@ -330,11 +332,12 @@ class SubredditProfile:
     def get_method(self):
         return 0
         
-tests = [
-    "memes", "science", "math", "engineeringmemes", "pokemon", "football",
-    "MartialMemes", "funny", "gaming", "music"
-]
+# tests = [
+#     "memes", "science", "math", "engineeringmemes", "pokemon", "football",
+#     "MartialMemes", "funny", "gaming", "music"
+# ]
 
+tests = ["science"]
 
 
 
@@ -346,16 +349,19 @@ for subreddit in tests:
     print(f"Description : {test.description}")
     print(f"Repost flairs : {test.has_repost_flairs}")
     print(f"Repost allowed : {test.reposts_allowed}")
-    print(f"Self-assign flair : {test.can_self_assign_flair}")
+    print(f"Self-assign flair : {test.can_self_assign_flair}") #TODO: marche pas lol
 
-    image = test.append_image(2020, 1)
+    image = test.append_image(2020, 4, 10)
 
     print(f"Repost% : {image.post_repost_percent}")
     print(f"Img% : {image.post_image_percent}")
     print(f"Txt% : {image.post_text_percent}")
     print(f"Title% : {image.post_title_percent}")
     print(f"Crosspost% : {image.post_crosspost_percent}")
-    print(f"Upvote% : {image.average_upvote_count}")
+    print(f"Upvote avg : {image.average_upvote_count}")
 
+    print(f"Ndays : {image.number_of_days}")
 
+    print(f"Known nb : {image.number_of_known}")
+    print(f"Unknown nb : {image.number_of_unknown}")
 
