@@ -1,9 +1,15 @@
 # from re import sub
-import praw
-from datetime import date
+import praw # praw-7.5.0
+
 import datetime as dt
+from datetime import date
+from datetime import timedelta
+
 from psaw import PushshiftAPI
 from prawcore.exceptions import Forbidden
+import numpy as np
+
+from sklearn.linear_model import LinearRegression
 
 # Ignore PushShift warning ("Not all PushShift shards are active.")
 import warnings
@@ -39,13 +45,20 @@ class SubredditImage:
 
         # 06/2016 : month and year or the image
         self.begin_timestamp = f"{startMonth}/{startYear}"
+        self.year = startYear
+        self.month = startMonth
         # self.end_timestamp = f"{endMonth}/{endYear}"
 
         self.profile = profile
         # post_at_date = profile.get_post_from_date(year, month)
 
         # Returns n posts (in exactly the time period)
-        posts = self.get_posts_within_range(startYear, startYear+1, startMonth, startMonth, n)
+        endMonth = startMonth+1
+        endYear = startYear
+        if startMonth == 12:
+            endMonth = 1
+            endYear = startYear + 1
+        posts = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, n)
 
         self.do_stats(posts)
 
@@ -66,16 +79,19 @@ class SubredditImage:
 
         # Float : Percentage of posts that are crossposts
         self.post_crosspost_percent = 100 * self.number_of_crossposts / self.number_of_posts
+        
+        # Float : Percentage of posts that are a link
+        self.post_link_percent = 100 * self.number_of_links / self.number_of_posts
 
         # Int : Average amount of upvotes per post
-        self.average_upvote_count = 100 * self.number_of_upvotes / self.number_of_posts
+        self.average_upvote_count = self.number_of_upvotes / self.number_of_posts
 
     def do_stats(self, posts):
         current_day = date.fromtimestamp(posts[0].created_utc)
         les_n = []  # list of number of posts in a day
         n = 0  # number of posts for this day
 
-        for post in posts:
+        for i, post in enumerate(posts):
 
             this_day = date.fromtimestamp(post.created_utc)
             if this_day.month == current_day.month and \
@@ -89,14 +105,17 @@ class SubredditImage:
                 current_day = this_day
 
             self.increment_stats(post)
+            
+            if i%5==0:
+                print(f"Test n°{i}/{len(posts)}")
 
         if n > 0:
             les_n.append(n)
 
         # Number of days the image is based on
-        number_of_days = 1 + (date.fromtimestamp(posts[0].created_utc) - date.fromtimestamp(posts[-1].created_utc)).days
+        self.number_of_days = 1 + (date.fromtimestamp(posts[0].created_utc) - date.fromtimestamp(posts[-1].created_utc)).days
         self.number_of_posts = len(posts)
-        self.number_posts_day = sum(les_n) / number_of_days
+        self.number_posts_day = (100 / self.number_of_days)*100
 
         end_datetime = date.fromtimestamp(post.created_utc)
         self.end_timestamp = f"{end_datetime.month}/{end_datetime.year}"
@@ -126,7 +145,7 @@ class SubredditImage:
                 return False
             if self.repostInTopFiveComments(submission):
                 self.number_of_known += 1
-                print(f"{submission.title}")
+                print(f"{submission.title} : {submission}")
                 return True
 
             self.number_of_unknown += 1
@@ -140,14 +159,14 @@ class SubredditImage:
 
         if self.repostInTopFiveComments(submission) or "repost" in submission.link_flair_text.lower():
             self.number_of_known += 1
-            print(f"{submission.title}")
+            print(f"{submission.title} : {submission}")
             return True
 
         self.number_of_unknown += 1
         # By default, post is not a repost
         return False
 
-    def get_posts_within_range(self, startYear, endYear, startMonth=1, endMonth=1, max_posts=100):
+    def get_posts_within_range(self, startYear, endYear, startMonth, endMonth, max_posts):
         """
         Returns list of the first n posts between two given dates (Returns a generator object).
         month and year are integers
@@ -164,8 +183,24 @@ class SubredditImage:
             limit=max_posts
             # filter=['url','author', 'title', 'subreddit']
         )
-
-        return list(submissions_generator)  # list of submissions
+        
+        # If the list is too short, add a month and repeat
+        first_list = list(submissions_generator)
+        if len(first_list) < max_posts:
+            
+            if endMonth == 12:
+                endMonth = 1
+                endYear += 1
+            else:
+                endMonth += 1
+                
+            l = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, max_posts)
+            
+            return l
+        
+        else:
+            
+            return first_list
 
     def increment_stats(self, post):
         """
@@ -183,40 +218,48 @@ class SubredditImage:
             else:
                 self.crosspost_subs[original_sub] = 1
 
-        # always possible to know
+
         if post.is_self:
-            self.number_of_text += 1
+                
+                if post.selftext == "":
+                    self.number_of_title += 1
+                    
+                else:
+                    self.number_of_text += 1
+
 
         # easy to know
         elif self.profile.post_hints_enabled:
 
             if 'image' in post.post_hint:
                 self.number_of_images += 1
+                
             elif 'video' in post.post_hint:
                 self.number_of_videos += 1
-            elif post.is_self and post.self_text == "":
-                self.number_of_title += 1
+                    
             elif 'link' in post.post_hint:
                 self.number_of_links += 1
+                
             else:
-                print(f"{post.title} -> type unknown")
+                print(f"Unkown post {post}")
 
         # harder to know
-        elif post.is_reddit_media_domain:
+        else:
 
             if post.domain == 'i.redd.it':
                 self.number_of_images += 1
             elif post.domain == 'v.redd.it':
                 self.number_of_videos += 1
-            elif post.is_self and post.self_text == "":
-                self.number_of_title += 1
+            
             else:
                 self.number_of_links += 1
+
 
         if self.checkIsRepost(post):
             self.number_of_reposts += 1
 
         self.sum_of_upvote_ratio += post.upvote_ratio
+
         self.number_of_upvotes += post.score
 
 
@@ -237,6 +280,8 @@ class SubredditProfile:
         self.api = PushshiftAPI(self.reddit)
 
         self.name = name  # String : Name of the subreddit
+        
+        self.created_date = self.subreddit.created_utc
 
         # Boolean : if post hints are enabled
         self.post_hints_enabled = self.check_post_hints()
@@ -255,9 +300,41 @@ class SubredditProfile:
 
         # Boolean : If reposts are allowed
         self.reposts_allowed = self.check_reposts_allowed(self.subreddit.rules)
+        
+        
 
         self.can_self_assign_flair = self.subreddit.can_assign_user_flair
+        if self.can_self_assign_flair:
+            req = self.subreddit.post_requirements()
+            self.must_assign_flair = req["is_flair_required"]
+        else:
+            self.must_assign_flair = False
+            
         self.subreddit_images = []
+        
+        self.init_n_images_spread(5, 10)
+        
+    
+    def init_n_images_spread(self, n_dates, sample_size):
+        
+        dates = self.get_n_dates(n_dates)
+        
+        for i, d in enumerate(dates):
+            
+            self.append_image(d.year, d.month,sample_size)
+            
+            print(f"Image {i+1}/{len(dates)} ok")
+    
+    def get_n_dates(self, n=5):
+        
+        start = date.fromtimestamp(self.created_date)
+        end = date.today()
+        
+        n_days = (end - start).days
+        day_index = np.linspace(0, n_days, n+1)
+        
+        return [start+timedelta(days=int(x)) for x in day_index[:-1]]
+        
 
     def check_post_hints(self):
 
@@ -312,10 +389,61 @@ class SubredditProfile:
             return -1
         new_image = SubredditImage(self, year, month, n)
         self.subreddit_images.append(new_image)
+        
+        
 
         return new_image
 
+
+    def parse_images(self):
+        """Does the calculations based on the images (average, evolution)"""
+        
+        
+        repost_sum = 0
+        img_sum = 0
+        txt_sum = 0
+        title_sum = 0
+        crosspost_sum = 0
+        link_sum = 0
+        upvote_sum = 0
+        
+        n_images = len(self.subreddit_images)
+                
+        for img in self.subreddit_images:
+            repost_sum += img.post_repost_percent
+            img_sum += img.post_image_percent
+            txt_sum += img.post_text_percent
+            title_sum += img.post_title_percent
+            crosspost_sum += img.post_crosspost_percent
+            link_sum += img.post_link_percent
+            upvote_sum += img.average_upvote_count
+        
+        self.post_repost_percent = 100 * repost_sum / n_images
+        self.post_image_percent = 100 * img_sum / n_images
+        self.post_text_percent = 100 * txt_sum / n_images
+        self.post_title_percent = 100 * title_sum / n_images
+        self.post_crosspost_percent = 100 * crosspost_sum / n_images
+        self.post_link_percent = 100 * link_sum / n_images
+        self.average_upvote_count = upvote_sum / n_images
+
+        #TODO: https://realpython.com/linear-regression-in-python/#when-do-you-need-regression
+
     def get_method(self):
+        
+        if len(self.subreddit_images) < 5:
+            raise ValueError("Not enough samples to determine the best method.")
+        
+        # Whether allowed or not, we need to copy another post
+        # since we can't decide accurately what flair to use
+        if self.must_assign_flair:
+            return "repost"
+        
+        
+        # If reposts aren't allowed but still exist in a large enough quantity
+        if not self.reposts_allowed and self.avg_repost_percent > 15:
+            pass
+
+        
         return 0
 
 
@@ -324,28 +452,40 @@ class SubredditProfile:
 #     "MartialMemes", "funny", "gaming", "music"
 # ]
 
-tests = ["science"]
+tests = ["martialmemes"]
 
 for subreddit in tests:
     test = SubredditProfile(subreddit)
+    
+    print(test.get_n_dates())
+    
     print(f"/// {test.name} ///")
-    print(f"Post hints : {test.post_hints_enabled}")  # TODO: marche pas lol
-    print(f"Sub count : {test.subscriber_count}")
-    print(f"Description : {test.description}")
+    print(f"Post hints : {test.post_hints_enabled}")
+    #print(f"Sub count : {test.subscriber_count}")
+    #print(f"Description : {test.description}")
     print(f"Repost flairs : {test.has_repost_flairs}")
     print(f"Repost allowed : {test.reposts_allowed}")
-    print(f"Self-assign flair : {test.can_self_assign_flair}")  # TODO: marche pas lol
+    print(f"Self-assign flair : {test.can_self_assign_flair}")
+    print(f"Must assign flair : {test.must_assign_flair}")
 
-    image = test.append_image(2020, 4, 100)
+    #image = test.append_image(2022, 4, 100)
+    for i, img in enumerate(test.subreddit_images):
+        
+        print("////////////////////////")
+        print(f"IMAGE N°{i}/{len(test.subreddit_images)}")
+        print("////////////////////////")
 
-    print(f"Repost% : {image.post_repost_percent}")
-    print(f"Img% : {image.post_image_percent}")
-    print(f"Txt% : {image.post_text_percent}")
-    print(f"Title% : {image.post_title_percent}")
-    print(f"Crosspost% : {image.post_crosspost_percent}")
-    print(f"Upvote avg : {image.average_upvote_count}")
+        print(f"Repost% : {img.post_repost_percent}")
+        print(f"Img% : {img.post_image_percent}")
+        print(f"Txt% : {img.post_text_percent}")
+        print(f"Title% : {img.post_title_percent}")
+        print(f"Link% : {img.post_link_percent}")
+        print(f"Crosspost% : {img.post_crosspost_percent}")
+        print(f"Upvote avg : {img.average_upvote_count}")
 
-    print(f"Ndays : {image.number_of_days}")
+        print(f"Ndays : {img.number_of_days}")
 
-    print(f"Known nb : {image.number_of_known}")
-    print(f"Unknown nb : {image.number_of_unknown}")
+        print(f"Known nb : {img.number_of_known}")
+        print(f"Unknown nb : {img.number_of_unknown}")
+    
+    
