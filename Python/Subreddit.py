@@ -41,16 +41,20 @@ class SubredditImage:
     # associated with the amount of crossposts for each
     crosspost_subs = {}
 
-    def __init__(self, profile, startYear, startMonth, n):
+    def __init__(self, profile, startYear, startMonth, startDay, n):
 
         # 06/2016 : month and year or the image
-        self.begin_timestamp = f"{startMonth}/{startYear}"
+        self.begin_timestamp = f"{startDay}/{startMonth}/{startYear}"
         self.year = startYear
         self.month = startMonth
+        self.day = startDay
         # self.end_timestamp = f"{endMonth}/{endYear}"
 
         self.profile = profile
-        # post_at_date = profile.get_post_from_date(year, month)
+
+        #Length between creation of subreddit and today in number of days
+        #the x axis for LinearRegression
+        self.day_index = (date.fromtimestamp(self.profile.created_date) - date(startYear, startMonth, startDay)).days
 
         # Returns n posts (in exactly the time period)
         endMonth = startMonth+1
@@ -58,7 +62,7 @@ class SubredditImage:
         if startMonth == 12:
             endMonth = 1
             endYear = startYear + 1
-        posts = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, n)
+        posts = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, n)
 
         self.do_stats(posts)
 
@@ -166,14 +170,18 @@ class SubredditImage:
         # By default, post is not a repost
         return False
 
-    def get_posts_within_range(self, startYear, endYear, startMonth, endMonth, max_posts):
+    def get_posts_within_range(self, startYear, endYear, startMonth, endMonth, startDay, max_posts):
         """
         Returns list of the first n posts between two given dates (Returns a generator object).
         month and year are integers
         max_posts <= 1000 (default : 100)
         """
 
-        start_epoch = int(dt.datetime(startYear, startMonth, 1).timestamp())  # Could be any date
+        start_epoch = int(dt.datetime(startYear, startMonth, startDay).timestamp())  # Could be any date
+        
+        #startDay can be any day, end day can't be 31 (wll bug for some months)
+        #putting 1 means sometimes there won't be enough posts but then it will restart
+        #by adding a month so it will fix itself.
         stop_epoch = int(dt.datetime(endYear, endMonth, 1).timestamp())
 
         submissions_generator = self.profile.api.search_submissions(
@@ -194,7 +202,7 @@ class SubredditImage:
             else:
                 endMonth += 1
                 
-            l = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, max_posts)
+            l = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, max_posts)
             
             return l
         
@@ -313,6 +321,8 @@ class SubredditProfile:
         self.subreddit_images = []
         
         self.init_n_images_spread(5, 10)
+
+        self.parse_images()
         
     
     def init_n_images_spread(self, n_dates, sample_size):
@@ -321,7 +331,7 @@ class SubredditProfile:
         
         for i, d in enumerate(dates):
             
-            self.append_image(d.year, d.month,sample_size)
+            self.append_image(d.year, d.month, d.day, sample_size)
             
             print(f"Image {i+1}/{len(dates)} ok")
     
@@ -383,11 +393,12 @@ class SubredditProfile:
 
         return False
 
-    def append_image(self, year, month, n):
+    def append_image(self, year, month, day, n):
 
         if any(x.year == year and x.month == month for x in self.subreddit_images):
-            return -1
-        new_image = SubredditImage(self, year, month, n)
+            raise ValueError("Image already exists for this month")
+
+        new_image = SubredditImage(self, year, month, day, n)
         self.subreddit_images.append(new_image)
         
         
@@ -399,34 +410,44 @@ class SubredditProfile:
         """Does the calculations based on the images (average, evolution)"""
         
         
-        repost_sum = 0
-        img_sum = 0
-        txt_sum = 0
-        title_sum = 0
-        crosspost_sum = 0
-        link_sum = 0
-        upvote_sum = 0
+        repost_list = []
+        img_list = []
+        txt_list = []
+        title_list = []
+        crosspost_list = []
+        link_list = []
+        upvote_list = []
         
         n_images = len(self.subreddit_images)
                 
         for img in self.subreddit_images:
-            repost_sum += img.post_repost_percent
-            img_sum += img.post_image_percent
-            txt_sum += img.post_text_percent
-            title_sum += img.post_title_percent
-            crosspost_sum += img.post_crosspost_percent
-            link_sum += img.post_link_percent
-            upvote_sum += img.average_upvote_count
+            repost_list.append(img.post_repost_percent)
+            img_list.append(img.post_image_percent)
+            txt_list.append(img.post_text_percent)
+            title_list.append(img.post_title_percent)
+            crosspost_list.append(img.post_crosspost_percent)
+            link_list.append(img.post_link_percent)
+            upvote_list.append(img.average_upvote_count)
         
-        self.post_repost_percent = 100 * repost_sum / n_images
-        self.post_image_percent = 100 * img_sum / n_images
-        self.post_text_percent = 100 * txt_sum / n_images
-        self.post_title_percent = 100 * title_sum / n_images
-        self.post_crosspost_percent = 100 * crosspost_sum / n_images
-        self.post_link_percent = 100 * link_sum / n_images
-        self.average_upvote_count = upvote_sum / n_images
+        self.post_repost_percent = 100 * sum(repost_list) / n_images
+        self.post_image_percent = 100 * sum(img_list) / n_images
+        self.post_text_percent = 100 * sum(txt_list) / n_images
+        self.post_title_percent = 100 * sum(title_list) / n_images
+        self.post_crosspost_percent = 100 * sum(crosspost_list) / n_images
+        self.post_link_percent = 100 * sum(link_list) / n_images
+        self.average_upvote_count = sum(upvote_list) / n_images
+
+        print(f"AVERAGE UPVOTE COUNT : {self.average_upvote_count}")
 
         #TODO: https://realpython.com/linear-regression-in-python/#when-do-you-need-regression
+
+        x = np.array([img.day_index for img in self.subreddit_images]).reshape((-1, 1))
+        #y = repost_list
+        model = LinearRegression()
+        model.fit(x, repost_list)
+        print(f"COEFFICIENT : {model.coef_}")
+
+
 
     def get_method(self):
         
@@ -438,10 +459,12 @@ class SubredditProfile:
         if self.must_assign_flair:
             return "repost"
         
+        #We do the stats on the images
+        self.parse_images()
         
         # If reposts aren't allowed but still exist in a large enough quantity
-        if not self.reposts_allowed and self.avg_repost_percent > 15:
-            pass
+        # if not self.reposts_allowed and self.avg_repost_percent > 15:
+        #     pass
 
         
         return 0
