@@ -42,7 +42,7 @@ class SubredditImage:
     crosspost_subs = {}
 
     def __init__(self, profile, startYear, startMonth, startDay, n):
-
+    
         # 06/2016 : month and year or the image
         self.begin_timestamp = f"{startDay}/{startMonth}/{startYear}"
         self.year = startYear
@@ -54,7 +54,7 @@ class SubredditImage:
 
         #Length between creation of subreddit and today in number of days
         #the x axis for LinearRegression
-        self.day_index = (date.fromtimestamp(self.profile.created_date) - date(startYear, startMonth, startDay)).days
+        self.day_index = ( date(startYear, startMonth, startDay) - date.fromtimestamp(self.profile.created_date)).days
 
         # Returns n posts (in exactly the time period)
         endMonth = startMonth+1
@@ -62,7 +62,7 @@ class SubredditImage:
         if startMonth == 12:
             endMonth = 1
             endYear = startYear + 1
-        posts = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, n)
+        posts = self.profile.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, n)
 
         self.do_stats(posts)
 
@@ -110,7 +110,7 @@ class SubredditImage:
 
             self.increment_stats(post)
             
-            if i%5==0:
+            if i%20==0:
                 print(f"Test n°{i}/{len(posts)}")
 
         if n > 0:
@@ -149,7 +149,6 @@ class SubredditImage:
                 return False
             if self.repostInTopFiveComments(submission):
                 self.number_of_known += 1
-                print(f"{submission.title} : {submission}")
                 return True
 
             self.number_of_unknown += 1
@@ -163,52 +162,12 @@ class SubredditImage:
 
         if self.repostInTopFiveComments(submission) or "repost" in submission.link_flair_text.lower():
             self.number_of_known += 1
-            print(f"{submission.title} : {submission}")
             return True
 
         self.number_of_unknown += 1
         # By default, post is not a repost
         return False
 
-    def get_posts_within_range(self, startYear, endYear, startMonth, endMonth, startDay, max_posts):
-        """
-        Returns list of the first n posts between two given dates (Returns a generator object).
-        month and year are integers
-        max_posts <= 1000 (default : 100)
-        """
-
-        start_epoch = int(dt.datetime(startYear, startMonth, startDay).timestamp())  # Could be any date
-        
-        #startDay can be any day, end day can't be 31 (wll bug for some months)
-        #putting 1 means sometimes there won't be enough posts but then it will restart
-        #by adding a month so it will fix itself.
-        stop_epoch = int(dt.datetime(endYear, endMonth, 1).timestamp())
-
-        submissions_generator = self.profile.api.search_submissions(
-            after=start_epoch,
-            before=stop_epoch,
-            subreddit=self.profile.subreddit,
-            limit=max_posts
-            # filter=['url','author', 'title', 'subreddit']
-        )
-        
-        # If the list is too short, add a month and repeat
-        first_list = list(submissions_generator)
-        if len(first_list) < max_posts:
-            
-            if endMonth == 12:
-                endMonth = 1
-                endYear += 1
-            else:
-                endMonth += 1
-                
-            l = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, max_posts)
-            
-            return l
-        
-        else:
-            
-            return first_list
 
     def increment_stats(self, post):
         """
@@ -281,7 +240,7 @@ class SubredditProfile:
         password="steganographie",
     )
 
-    def __init__(self, name):
+    def __init__(self, name, sample_size=100, n_dates=5):
 
         self.subreddit = self.reddit.subreddit(name)
 
@@ -320,7 +279,7 @@ class SubredditProfile:
             
         self.subreddit_images = []
         
-        self.init_n_images_spread(5, 10)
+        self.init_n_images_spread(n_dates, sample_size)
 
         self.parse_images()
         
@@ -342,6 +301,10 @@ class SubredditProfile:
         
         n_days = (end - start).days
         day_index = np.linspace(0, n_days, n+1)
+        
+        self.step = day_index[1] 
+        # les pentes sont pas représentatives à cause de l'âge
+        # des subreddit -> multiplie par le pas.
         
         return [start+timedelta(days=int(x)) for x in day_index[:-1]]
         
@@ -437,16 +400,109 @@ class SubredditProfile:
         self.post_link_percent = 100 * sum(link_list) / n_images
         self.average_upvote_count = sum(upvote_list) / n_images
 
-        print(f"AVERAGE UPVOTE COUNT : {self.average_upvote_count}")
-
-        #TODO: https://realpython.com/linear-regression-in-python/#when-do-you-need-regression
-
         x = np.array([img.day_index for img in self.subreddit_images]).reshape((-1, 1))
         #y = repost_list
         model = LinearRegression()
         model.fit(x, repost_list)
-        print(f"COEFFICIENT : {model.coef_}")
+        self.slope = model.coef_*self.step
+        print(f"PENTE : {model.coef_*self.step}")
+        
+        
+    def get_repost(self):
+        """Finds a post from six months ago and before which is closest to the average post score.
 
+        Returns:
+            Submission: the Submission with lowest avg difference
+        """
+        
+        threshold = date.today() - timedelta(days=180)
+        
+        
+        enough = False
+        while not enough:
+            post_list = self.get_posts_within_range(threshold.year-1, threshold.year, threshold.month, threshold.month, threshold.day, 50)
+            
+            if len(post_list) == 50:
+                enough = True
+                
+            else:
+                threshold += timedelta(days=30) # If sub was closed six months ago / didn't exist, get closer every month
+        
+        # Posts with a score near the average
+        avg_posts = [x for x in post_list if x.score < threshold*1.1 or x.score > threshold*0.9]
+        
+        # If there are enough posts matching the criteria, get the one with the least comments
+        if len(avg_posts) > 1:
+            return self.get_least_comments(post_list)
+        
+        # Else, get the post closest to the average
+        return self.get_best_score(post_list)
+        
+    def get_least_comments(self, posts):
+        """Returns the post with the least comments among the list"""
+        
+        least = 99999
+        i_least = -1
+        
+        for i, p in enumerate(posts):
+            if p.num_comments < least:
+                i_least = i
+                least = p.num_comments
+
+        return posts[i_least]
+        
+    def get_best_score(self, post_list):
+        
+        m = 9999999
+        i_min = -1
+        for i, p in enumerate(post_list):
+            margin = abs(p.score - self.average_upvote_count)
+            if margin < m:
+                m = margin
+                i_min = i
+
+        return post_list[i_min]
+        
+    
+    def get_posts_within_range(self, startYear, endYear, startMonth, endMonth, startDay, max_posts):
+        """
+        Returns list of the first n posts between two given dates (Returns a generator object).
+        month and year are integers
+        max_posts <= 1000 (default : 100)
+        """
+
+        start_epoch = int(dt.datetime(startYear, startMonth, startDay).timestamp())  # Could be any date
+        
+        #startDay can be any day, end day can't be 31 (wll bug for some months)
+        #putting 1 means sometimes there won't be enough posts but then it will restart
+        #by adding a month so it will fix itself.
+        stop_epoch = int(dt.datetime(endYear, endMonth, 1).timestamp())
+
+        submissions_generator = self.profile.api.search_submissions(
+            after=start_epoch,
+            before=stop_epoch,
+            subreddit=self.profile.subreddit,
+            limit=max_posts
+            # filter=['url','author', 'title', 'subreddit']
+        )
+        
+        # If the list is too short, add a month and repeat
+        first_list = list(submissions_generator)
+        if len(first_list) < max_posts:
+            
+            if endMonth == 12:
+                endMonth = 1
+                endYear += 1
+            else:
+                endMonth += 1
+                
+            l = self.get_posts_within_range(startYear, endYear, startMonth, endMonth, startDay, max_posts)
+            
+            return l
+        
+        else:
+            
+            return first_list
 
 
     def get_method(self):
@@ -459,30 +515,45 @@ class SubredditProfile:
         if self.must_assign_flair:
             return "repost"
         
-        #We do the stats on the images
-        self.parse_images()
         
-        # If reposts aren't allowed but still exist in a large enough quantity
-        # if not self.reposts_allowed and self.avg_repost_percent > 15:
-        #     pass
-
+        # If reposts aren't allowed but still exist in a large enough quantity AND do not decrease
+        # Then we repost
+        if not self.reposts_allowed and self.post_repost_percent > 10:
+            
+            # They are not decreasing (max is |25|)
+            if not self.slope < -3:
+                return "repost"
         
-        return 0
+        
+        m =  max([self.post_image_percent, self.post_text_percent, self.post_title_percent, self.post_link_percent])
+        
+        # images or text are high enough in percentage, we generate one
+        
+        if self.post_image_percent > m - 20:
+            return "image"
+        
+        elif self.post_text_percent > m - 20:
+            return "text"
+        
+        # If nothing else works, resort to repost
+        else:
+            return "repost"
+                
 
 
-# tests = [
-#     "memes", "science", "math", "engineeringmemes", "pokemon", "football",
-#     "MartialMemes", "funny", "gaming", "music"
-# ]
 
-tests = ["martialmemes"]
+
+tests = [
+    "memes", "science", "math", "engineeringmemes", "pokemon", "football",
+    "MartialMemes", "funny", "gaming", "music"
+]
 
 for subreddit in tests:
+    
+    print(f"/// {subreddit} ///")
+    
     test = SubredditProfile(subreddit)
     
-    print(test.get_n_dates())
-    
-    print(f"/// {test.name} ///")
     print(f"Post hints : {test.post_hints_enabled}")
     #print(f"Sub count : {test.subscriber_count}")
     #print(f"Description : {test.description}")
@@ -490,25 +561,39 @@ for subreddit in tests:
     print(f"Repost allowed : {test.reposts_allowed}")
     print(f"Self-assign flair : {test.can_self_assign_flair}")
     print(f"Must assign flair : {test.must_assign_flair}")
+    
+    print(f"Total Repost % : {test.post_repost_percent}")
+    
+    print("////////")
+    
+    
+    # Détermination de la pente max
+    # model = LinearRegression()
+    # x = np.array([img.day_index for img in test.subreddit_images]).reshape((-1, 1))
+    # print(x)
+    # model.fit(x, [0, 24.0, 48.0, 74.0, 100.0])
+    # # expérimentalement, le max c'est environ 25
+    # print(f"/// PENTE_MAX : {model.coef_*test.step}")
+    
 
-    #image = test.append_image(2022, 4, 100)
-    for i, img in enumerate(test.subreddit_images):
+    # image = test.append_image(2022, 4, 100)
+    # for i, img in enumerate(test.subreddit_images):
         
-        print("////////////////////////")
-        print(f"IMAGE N°{i}/{len(test.subreddit_images)}")
-        print("////////////////////////")
+    #     print("////////////////////////")
+    #     print(f"IMAGE N°{i}/{len(test.subreddit_images)}")
+    #     print("////////////////////////")
 
-        print(f"Repost% : {img.post_repost_percent}")
-        print(f"Img% : {img.post_image_percent}")
-        print(f"Txt% : {img.post_text_percent}")
-        print(f"Title% : {img.post_title_percent}")
-        print(f"Link% : {img.post_link_percent}")
-        print(f"Crosspost% : {img.post_crosspost_percent}")
-        print(f"Upvote avg : {img.average_upvote_count}")
+    #     print(f"Repost% : {img.post_repost_percent}")
+    #     print(f"Img% : {img.post_image_percent}")
+    #     print(f"Txt% : {img.post_text_percent}")
+    #     print(f"Title% : {img.post_title_percent}")
+    #     print(f"Link% : {img.post_link_percent}")
+    #     print(f"Crosspost% : {img.post_crosspost_percent}")
+    #     print(f"Upvote avg : {img.average_upvote_count}")
 
-        print(f"Ndays : {img.number_of_days}")
+    #     print(f"Ndays : {img.number_of_days}")
 
-        print(f"Known nb : {img.number_of_known}")
-        print(f"Unknown nb : {img.number_of_unknown}")
+    #     print(f"Known nb : {img.number_of_known}")
+    #     print(f"Unknown nb : {img.number_of_unknown}")
     
     
